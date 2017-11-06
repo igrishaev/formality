@@ -7,23 +7,45 @@
   (_validator-artifact [this])
   (_validate-field [this value]))
 
-(defrecord MinValidator [limit]
+(defrecord MinValidator [v]
 
   IValidator
 
-  (_validator-artifact [_]
+  (_validator-artifact [this]
     :error/min-validator)
 
-  (_validate-field [_ value]
-    (>= value limit)))
+  (_validate-field [this value]
+    (>= value v)))
 
-#_(defrecord RangeValidator [v1 v2]
+(defrecord RangeValidator [v1 v2]
 
   IValidator
 
-  (validate [this value]
+  (_validator-artifact [this]
+    :error/range-validator)
+
+  (_validate-field [this value]
     (and (>= value v1)
          (<= value v2))))
+
+(defrecord RegexValidator [pattern]
+
+  IValidator
+
+  (_validator-artifact [this]
+    :error/regex-validator)
+
+  (_validate-field [this value]
+    (re-find pattern value)))
+
+(defn min-validator [v]
+  (->MinValidator v))
+
+(defn ragne-validator [v1 v2]
+  (->RangeValidator v1 v2))
+
+(defn regex-validator [pattern]
+  (->RegexValidator pattern))
 
 #_(defrecord RegexValidator [pattern]
 
@@ -45,7 +67,7 @@
   (_field-type [this])
   (_clean-field [this value]))
 
-(defrecord IntegerField [required nullable validators]
+(defrecord IntegerField []
 
   IField
 
@@ -57,8 +79,37 @@
       (integer? value) value
       (string? value) (Integer/parseInt value))))
 
-#_(defn integer-field [& args]
-  (apply ->IntegerField args))
+(defrecord ListField [sample fields]
+
+  IField
+
+  (_field-type [this] :list)
+
+  (_clean-field
+    [this values]
+
+    (doseq [value values]
+      (-> sample
+          (set-field-value value)
+          clean-field
+          validate-field
+          )
+      )
+    ))
+
+(defrecord FormField [form]
+
+  IField
+
+  (_field-type [this] :form)
+
+  (_clean-field
+    [this data]
+    )
+
+  )
+
+
 
 (def field-defaults
   {:required true
@@ -73,33 +124,26 @@
 (def integer-field
   (partial create-field map->IntegerField))
 
+#_(defn list-field [field]
+
+  (->ListField)
+  )
+
 (defn set-field-value
  [field value]
   (assoc field :value value))
 
-(defn set-field-error
-  [field error]
-  (update field :errors concat [error]))
-
-(defn set-field-clean-value
-  [field clean-value]
-  (assoc field :clean-value clean-value))
-
-(defn get-field-clean-value
+(defn get-field-value
   [field]
-  (get field :clean-value))
+  (:value field))
 
 (defn field-set?
   [field]
   (contains? field :value))
 
-(defn field-cleaned?
-  [field]
-  (contains? field :clean-value))
-
-(defn get-clean-value
-  [field]
-  (:clean-value field))
+(defn set-field-error
+  [field error]
+  (update field :errors concat [error]))
 
 (defmacro with-safe [& body]
   `(try
@@ -108,35 +152,42 @@
 
 (defn clean-field
   [{:keys [required nullable] :as field}]
-  (if (field-set? field)
-    (let [clean-value (with-safe (_clean-field field (:value field)))]
-      (set-field-clean-value field clean-value))
-    field))
+  (let [value (get-field-value field)]
+    (if (and (field-set? field)
+             (not (nil? value)))
+      (if-let [clean-value (with-safe (_clean-field field value))]
+        (set-field-value field clean-value)
+        (set-field-error field :error/clean))
+      field)))
+
+(defn field-failed
+  [field]
+  (-> field :errors not-empty))
 
 (defn apply-field-validator
   [field validator]
-  (if (_validate-field validator (get-clean-value field))
+  (if (_validate-field validator (get-field-value field))
     field
-    (set-field-error field (_validator-artifact field))))
+    (set-field-error field (_validator-artifact validator))))
 
 (defn validate-field
   [{:keys [required nullable] :as field}]
 
   (cond
 
-    (and (field-set? field)
-         (not (field-cleaned? field)))
-    (set-field-error field :error/clean)
+    (field-failed field)
+    field
 
-    ;; required, but there is no value
     (and required (not (field-set? field)))
     (set-field-error field :error/required)
 
-    ;; it's not nullable, but has nil value
     (and (not nullable)
-         (field-cleaned? field)
-         (nil? (get-field-clean-value field)))
+         (field-set? field)
+         (nil? (get-field-value field)))
     (set-field-error field :error/nullable)
+
+    (nil? (get-field-value field))
+    field
 
     :default
     (loop [field field
@@ -177,6 +228,10 @@
   (if-let [field (get-in form [:fields field-name])]
     (update-in form [:fields field-name] (clean-field field))
     form))
+
+(defn iter-form
+  [form]
+  (->> form :fields vals (sort-by :index)))
 
 (defn clean-form
   [form]
@@ -219,6 +274,19 @@
      (into {} (for [[i field] (map vector (range) fields)]
                 [(:name field) (assoc field :index i)]))
      validators)))
+
+#_(defprotocol IWidget
+  (render [this obj]))
+
+#_(defrecord InputWidget []
+  (render [this field]
+    [:input {:name (:name field)
+             :value (:value field)}]))
+
+#_(defrecord FormWidget []
+  (render [this form]
+    (for [field (iter-form form)]
+      (render field))))
 
 (def f
   (create-form
