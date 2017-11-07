@@ -3,6 +3,20 @@
 
 ;;;;;;
 
+(defmulti validate-field :type)
+
+(defmethod validate-field :min
+  [value min-value]
+  (>= value min-value))
+
+(defmethod validate-field :max
+  [value max-value]
+  (<= value max-value))
+
+(defmethod validate-field :enum
+  [value values]
+  (contains? (set values) value))
+
 (defprotocol IValidator
   (_validator-artifact [this])
   (_validate-field [this value]))
@@ -79,7 +93,7 @@
       (integer? value) value
       (string? value) (Integer/parseInt value))))
 
-(defrecord ListField [sample fields]
+(defrecord ListField [field]
 
   IField
 
@@ -88,7 +102,7 @@
   (_clean-field
     [this values]
 
-    (doseq [value values]
+    #_(doseq [value values]
       (-> sample
           (set-field-value value)
           clean-field
@@ -109,8 +123,6 @@
 
   )
 
-
-
 (def field-defaults
   {:required true
    :nullable false})
@@ -124,22 +136,49 @@
 (def integer-field
   (partial create-field map->IntegerField))
 
-#_(defn list-field [field]
+(def list-field (partial create-field map->ListField))
 
-  (->ListField)
-  )
+(defmulti set-field-value :type)
 
-(defn set-field-value
- [field value]
+(defmethod set-field-value :default
+  [field value]
   (assoc field :value value))
 
-(defn get-field-value
-  [field]
-  (:value field))
+(defmethod set-field-value :list
+  [{_field :field :as field} values]
+  (cond
+    (nil? values)
+    (assoc field :value nil)
+
+    (vector? values)
+    (assoc field
+           :value values
+           :fields (mapv set-field-value (repeat _field) values))
+
+    :default
+    (set-field-error field :error/list)))
 
 (defn field-set?
   [field]
   (contains? field :value))
+
+(defmulti get-field-value :type)
+
+(defmethod get-field-value :default
+  [field]
+  (when (field-set? field)
+    (:value field)))
+
+(defmethod get-field-value :list
+  [field]
+
+
+  (when-let [fields (:fields field)]
+    (mapv get-field-value fields)))
+
+#_(defmethod get-field-value :form
+  [field]
+  (mapv get-field-value (:fields field)))
 
 (defn set-field-error
   [field error]
@@ -150,7 +189,9 @@
      ~@body
      (catch Throwable e#)))
 
-(defn clean-field
+(defmulti clean-field :type)
+
+(defmethod clean-field :default
   [{:keys [required nullable] :as field}]
   (let [value (get-field-value field)]
     (if (and (field-set? field)
@@ -160,7 +201,28 @@
         (set-field-error field :error/clean))
       field)))
 
-(defn field-failed
+(defmulti field-failed :type)
+
+(defmethod field-failed :default
+  [field]
+  (-> field :errors not-empty))
+
+(defmethod field-failed :list
+  [field]
+  (some identity (map field-failed (:fields field))))
+
+(defmethod clean-field :list
+  [{fields :fields :as field}]
+  (let [field (assoc field :fields (mapv clean-field fields))]
+    (if (field-failed field)
+      (set-field-error field :error/clean)
+      field)))
+
+#_(defmethod clean-field :form
+  [{form :form :as field}]
+  (assoc field :form (clean-form form)))
+
+#_(defn field-failed
   [field]
   (-> field :errors not-empty))
 
